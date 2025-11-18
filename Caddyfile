@@ -1,0 +1,25 @@
+{
+    email admin@tudominio.com
+}
+
+${DOMAIN} {
+
+    root * /srv/public
+
+    @public {
+        path /
+        path /index.html
+        path /privacy
+        path /terms
+        path *.html
+    }
+
+    handle @public {
+        try_files {path} {path}.html /index.html
+        file_server
+    }
+
+    handle {
+        reverse_proxy n8n-main:5678
+    }
+}
