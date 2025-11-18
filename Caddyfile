@@ -1,8 +1,8 @@
 {
-    email admin@tudominio.com
+    email admin@lacampos.com
 }
 
-${DOMAIN} {
+n8n.lacampos.com {
 
     root * /srv/public
 
