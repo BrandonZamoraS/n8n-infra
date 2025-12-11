@@ -1,8 +1,8 @@
 {
-    email admin@lacampos.com
+    email admin@zamylabs.com
 }
 
-n8n.lacampos.com {
+corazondejesus.zamylabs.com {
 
     root * /srv/public
 
