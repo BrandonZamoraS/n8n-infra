@@ -1,112 +1,210 @@
-version: '3.8'
+version: "3.9"
 
 services:
-
+  ###########################################################
+  # Reverse proxy + HTTPS (Caddy)
+  ###########################################################
   caddy:
-    image: caddy:2.8
+    image: caddy:2-alpine
     container_name: caddy
-    restart: always
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./caddy_data:/data
-      - ./caddy_config:/config
       - ./Caddyfile:/etc/caddy/Caddyfile
       - ./public:/srv/public
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n-main
+    networks:
+      - n8n_net
 
+  ###########################################################
+  # Postgres (DB n8n + tus flujos)
+  ###########################################################
   postgres:
     image: postgres:16-alpine
     container_name: postgres
-    restart: always
+    restart: unless-stopped
     environment:
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Solo accesible desde el VPS (para Beekeeper/DBeaver vía SSH)
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - n8n_net
 
+  ###########################################################
+  # Redis (cola de n8n, con password)
+  ###########################################################
   redis:
-    image: redis:7
+    image: redis:7-alpine
     container_name: redis
-    restart: always
-    command: ["redis-server", "--appendonly", "no"]
-
-  n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
-    container_name: n8n-main
-    restart: always
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
     environment:
-      N8N_HOST: ${DOMAIN}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - n8n_net
+
+  ###########################################################
+  # n8n principal (UI + webhooks) en modo queue
+  ###########################################################
+  n8n-main:
+    image: n8nio/n8n:latest
+    container_name: n8n-main
+    restart: unless-stopped
+    environment:
+      # Zona horaria
+      GENERIC_TIMEZONE: America/Costa_Rica
+      # Host / dominio público (ej: n8n.cliente1.tu-dominio.com)
+      N8N_HOST: ${N8N_HOST}
       N8N_PORT: 5678
       N8N_PROTOCOL: https
-      WEBHOOK_URL: https://${DOMAIN}/
+
+      # URL pública para webhooks
+      WEBHOOK_URL: https://${N8N_HOST}/
+
+      # Clave de cifrado (la misma en main + workers)
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
 
-      EXECUTIONS_MODE: queue
-
+      # DB Postgres
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
 
+      # Queue mode + Redis
+      EXECUTIONS_MODE: queue
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_DB: 0
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
 
-      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+      # Opcional: endurecer un poco
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_SECURE_COOKIE: "true"
     volumes:
       - n8n_data:/home/node/.n8n
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - n8n_net
 
+  ###########################################################
+  # Workers (ejecución de flujos)
+  ###########################################################
   worker1:
-    image: docker.n8n.io/n8nio/n8n:latest
-    container_name: worker1
-    restart: always
-    command: worker
+    image: n8nio/n8n:latest
+    container_name: n8n-worker1
+    restart: unless-stopped
     environment:
-      EXECUTIONS_MODE: queue
-
+      GENERIC_TIMEZONE: America/Costa_Rica
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
 
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
 
+      EXECUTIONS_MODE: queue
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_DB: 0
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
 
-      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
-    volumes:
-      - n8n_data:/home/node/.n8n
+      # evita problemas al apagar
+      N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN: "true"
+    command: n8n worker
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - n8n_net
 
   worker2:
-    image: docker.n8n.io/n8nio/n8n:latest
-    container_name: worker2
-    restart: always
-    command: worker
+    image: n8nio/n8n:latest
+    container_name: n8n-worker2
+    restart: unless-stopped
     environment:
-      EXECUTIONS_MODE: queue
-
+      GENERIC_TIMEZONE: America/Costa_Rica
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
 
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
 
+      EXECUTIONS_MODE: queue
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_DB: 0
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
 
-      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+      N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN: "true"
+    command: n8n worker
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - n8n_net
+
+  ###########################################################
+  # Netdata (monitor VPS + Docker), solo en loopback
+  ###########################################################
+  netdata:
+    image: netdata/netdata:latest
+    container_name: netdata
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:19999:19999"
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
     volumes:
-      - n8n_data:/home/node/.n8n
+      - netdata_data:/var/lib/netdata
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+    networks:
+      - n8n_net
+
+#############################################################
+# Redes y volúmenes
+#############################################################
+networks:
+  n8n_net:
+    driver: bridge
 
 volumes:
   postgres_data:
+  redis_data:
   n8n_data:
+  caddy_data:
+  caddy_config:
+  netdata_data:
